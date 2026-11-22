@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="he" dir="rtl" data-theme="parchment">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="ספריא ללינוקס – לימוד גמרא עם רש״י, תוספות, עין משפט, תורה אור, מסורת הש״ס ושיעור דף יומי." />
+    <title>ספריא – לימוד גמרא</title>
+    <link rel="icon" href="/icon.png" />
+  </head>
+  <body>
+    <header class="topbar" role="banner">
+      <div class="brand">
+        <img src="/icon.png" alt="" class="brand-logo" />
+        <h1 class="brand-name" data-i18n="brand">ספריא</h1>
+      </div>
+
+      <nav class="nav" aria-label="ניווט בדפים">
+        <select id="tractate-select" class="ctl" aria-label="מסכת"></select>
+        <select id="daf-select" class="ctl ctl-daf" aria-label="דף"></select>
+        <div class="seg-ctl" role="group" aria-label="עמוד">
+          <button id="amud-a" class="seg-btn" type="button">.</button>
+          <button id="amud-b" class="seg-btn" type="button">:</button>
+        </div>
+        <button id="prev-btn" class="icon-btn" type="button" title="עמוד קודם (→)" data-i18n-title="prevPage" aria-label="עמוד קודם">
+          <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" /></svg>
+        </button>
+        <button id="next-btn" class="icon-btn" type="button" title="עמוד הבא (←)" data-i18n-title="nextPage" aria-label="עמוד הבא">
+          <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" /></svg>
+        </button>
+        <form id="search-form" class="search" role="search">
+          <svg viewBox="0 0 24 24" class="search-icon"><circle cx="11" cy="11" r="6" /><path d="M20 20l-4.5-4.5" /></svg>
+          <input id="search-input" type="search" placeholder="מראה מקום… (ברכות ל״א, בראשית א)" data-i18n-placeholder="searchPlaceholder" autocomplete="off" aria-label="חיפוש מראה מקום" />
+        </form>
+      </nav>
+
+      <div class="actions">
+        <button id="library-btn" class="pill-btn" type="button" title="ספריית ספריא והורדה לאופליין" data-i18n-title="libTitle">
+          <svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>
+          <span data-i18n="library">ספרייה</span>
+        </button>
+        <button id="dafyomi-btn" class="pill-btn" type="button" title="הדף היומי" data-i18n-title="dafYomi">
+          <svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2" /><path d="M4 10h16M9 3v4M15 3v4" /></svg>
+          <span data-i18n="dafYomi">דף יומי</span>
+        </button>
+        <button id="video-btn" class="pill-btn accent" type="button" title="שיעור ושמע" data-i18n-title="lesson">
+          <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+          <span data-i18n="lesson">שיעור</span>
+        </button>
+        <button id="bookmark-btn" class="icon-btn" type="button" title="סימנייה" data-i18n-title="bookmark" aria-label="סימנייה">
+          <svg viewBox="0 0 24 24"><path d="M6 4h12v17l-6-4-6 4z" /></svg>
+        </button>
+        <div class="font-ctl" role="group" aria-label="גודל גופן">
+          <button id="font-dec" class="icon-btn" type="button" title="Ctrl −">א<sub>−</sub></button>
+          <button id="font-inc" class="icon-btn" type="button" title="Ctrl +">א<sup>+</sup></button>
+        </div>
+        <button id="settings-btn" class="icon-btn" type="button" popovertarget="settings-pop" title="הגדרות" data-i18n-title="settings" aria-label="הגדרות">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1" /></svg>
+        </button>
+        <button id="sidebar-toggle" class="icon-btn" type="button" title="פאנל צד" data-i18n-title="sidebar" aria-label="פאנל צד">
+          <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16" /></svg>
+        </button>
+      </div>
+    </header>
+
+    <div id="settings-pop" popover class="popover">
+      <h2 data-i18n="displaySettings">הגדרות תצוגה</h2>
+      <label class="row"><span data-i18n="uiLanguage">שפת ממשק</span>
+        <select id="opt-ui-lang" class="col-select" style="font-size:13px;padding:4px 26px 4px 10px">
+          <option value="he">עברית</option>
+          <option value="en">English</option>
+          <option value="fr">Français</option>
+          <option value="ru">Русский</option>
+        </select>
+      </label>
+      <div class="row"><span data-i18n="textLanguage">שפת טקסט</span>
+        <div class="seg-ctl" id="text-lang-ctl">
+          <button type="button" data-tlang="hebrew" class="seg-btn">עברית</button>
+          <button type="button" data-tlang="english" class="seg-btn">English</button>
+        </div>
+      </div>
+      <label class="row"><span data-i18n="gemara">גמרא</span> <input id="fs-gemara" type="range" min="14" max="40" step="1" /> <output id="fs-gemara-out"></output></label>
+      <label class="row"><span data-i18n="commentaries">מפרשים</span> <input id="fs-comm" type="range" min="11" max="30" step="1" /> <output id="fs-comm-out"></output></label>
+      <label class="row"><span data-i18n="panel">פאנל</span> <input id="fs-side" type="range" min="11" max="26" step="1" /> <output id="fs-side-out"></output></label>
+      <div class="row"><span data-i18n="theme">ערכת נושא</span>
+        <div class="seg-ctl" id="theme-ctl">
+          <button type="button" data-theme="parchment" class="seg-btn" data-i18n="themeParchment">קלף</button>
+          <button type="button" data-theme="light" class="seg-btn" data-i18n="themeLight">בהיר</button>
+          <button type="button" data-theme="dark" class="seg-btn" data-i18n="themeDark">כהה</button>
+        </div>
+      </div>
+      <label class="row check"><input id="opt-nikud" type="checkbox" /> <span data-i18n="optNikud">ניקוד בטקסט</span></label>
+      <label class="row check"><input id="opt-rashi-font" type="checkbox" /> <span data-i18n="optRashiFont">כתב רש״י במפרשים (רש״י ותוספות)</span></label>
+      <label class="row check"><input id="opt-paras" type="checkbox" /> <span data-i18n="optParas">חלוקה לפסקאות</span></label>
+      <label class="row check"><input id="opt-marks" type="checkbox" /> <span data-i18n="optMarks">סימני מראי מקומות בגוף הטקסט</span></label>
+      <label class="row check"><input id="opt-sync" type="checkbox" /> <span data-i18n="optSync">סנכרון גלילה של המפרשים</span></label>
+      <label class="row check"><input id="opt-daf-layout" type="checkbox" /> <span data-i18n="optDafLayout">רש״י בצד הפנימי כבדף (מתחלף בין עמוד א׳ לב׳)</span></label>
+      <div class="row"><button id="clear-cache" class="pill-btn" type="button" data-i18n="clearCache">ניקוי מטמון</button></div>
+      <h2 data-i18n="bookmarks">סימניות</h2>
+      <ul id="bookmarks-list" class="mini-list"></ul>
+      <h2 data-i18n="recent">אחרונים</h2>
+      <ul id="history-list" class="mini-list"></ul>
+    </div>
+
+    <div class="layout" id="layout">
+      <main class="reader" id="reader" aria-live="polite">
+        <section class="col col-comm" id="col-inner" aria-label="רש״י">
+          <header class="col-head comm-head">
+            <span class="col-label" data-i18n="commentatorLabel">מפרש</span>
+            <select class="col-select" id="inner-select" aria-label="מפרש פנימי"></select>
+          </header>
+          <div class="col-body comm-body" id="inner-body"></div>
+        </section>
+
+        <section class="col col-gemara" id="col-gemara" aria-label="גמרא">
+          <header class="col-head gemara-head">
+            <h2 id="daf-title" class="daf-title">—</h2>
+            <span id="daf-status" class="status"></span>
+          </header>
+          <div class="col-body gemara-body" id="gemara-body"></div>
+          <footer class="col-foot" id="gemara-foot"></footer>
+        </section>
+
+        <section class="col col-comm" id="col-outer" aria-label="תוספות">
+          <header class="col-head comm-head">
+            <span class="col-label" data-i18n="commentatorLabel">מפרש</span>
+            <select class="col-select" id="outer-select" aria-label="מפרש חיצוני"></select>
+          </header>
+          <div class="col-body comm-body" id="outer-body"></div>
+        </section>
+      </main>
+
+      <aside class="sidebar" id="sidebar" aria-label="מראי מקומות ופרשנים">
+        <div class="tabs" role="tablist" id="tabs"></div>
+        <div class="filter-bar" id="filter-bar" hidden>
+          <span id="filter-label"></span>
+          <button id="filter-clear" class="link-btn" type="button" data-i18n="showAll">הצג הכל</button>
+        </div>
+        <div class="side-body" id="side-body"></div>
+      </aside>
+    </div>
+
+    <dialog id="library-dialog" class="lib-dialog" aria-label="ספריית ספריא והורדה לאופליין">
+      <header class="lib-head">
+        <div>
+          <h2 class="lib-title" data-i18n="libTitle">ספריית ספריא · אופליין</h2>
+          <div id="lib-stats" class="lib-stats">טוען נתוני מטמון…</div>
+        </div>
+        <div class="lib-head-actions">
+          <button id="lib-dl-all" class="pill-btn accent" type="button" data-i18n="libDlAll">הורד את כל המאגר</button>
+          <button id="lib-dl-current" class="pill-btn" type="button" data-i18n="libDlCurrent">הורד ספר נוכחי</button>
+          <button id="lib-close" class="icon-btn" type="button" aria-label="Close">✕</button>
+        </div>
+      </header>
+      <div id="lib-progress" class="lib-progress" hidden>
+        <div class="lib-progress-info">
+          <span id="lib-progress-text">מוריד…</span>
+          <button id="lib-dl-cancel" class="link-btn" type="button" data-i18n="libCancel">ביטול</button>
+        </div>
+        <div class="lib-progress-bar"><i id="lib-progress-fill"></i></div>
+      </div>
+      <div class="lib-controls">
+        <input id="lib-search" type="search" placeholder="חפש ספר בכל מאגר ספריא (לחץ על ספר לפתיחה)" data-i18n-placeholder="libSearchPlaceholder" autocomplete="off" />
+        <label class="lib-opt"><input id="lib-dl-links" type="checkbox" checked /> <span data-i18n="libDlLinks">הורד גם קישורים ומפרשים</span></label>
+      </div>
+      <div id="lib-cats" class="lib-cats" role="tablist"></div>
+      <div id="lib-list" class="lib-list"></div>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" hidden></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Sefarya
+Name[he]=ספריא
+Comment=Talmud & Sefaria Library Study
+Comment[he]=לימוד גמרא וספריית ספריא
+Exec=sefarya
+Icon=${SNAP}/usr/share/icons/hicolor/256x256/apps/sefarya.png
+Terminal=false
+Type=Application
+Categories=Education;
+StartupWMClass=sefarya
