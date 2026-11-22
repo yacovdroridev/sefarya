@@ -1,5 +1,5 @@
 import "./styles.css";
-import { getText, getLinks, getDafYomi, findVideo, findBookAudio, getAudioStream, openExternal, openVideoWindow, clearCache, getCacheStats, getLibraryIndex, lookupName, downloadBook, downloadLibrary, sefariaUrl } from "./api/sefaria.js";
+import { getText, getLinks, getDafYomi, findVideo, findBookAudio, getAudioStream, openExternal, openVideoWindow, clearCache, getCacheStats, getLibraryIndex, lookupName, downloadBook, downloadBooksFast, cancelFastDownload, prefetchRefs, sefariaUrl } from "./api/sefaria.js";
 import { SEDARIM, tractateByEn } from "./lib/tractates.js";
 import { toHebrewNumeral, stripNikud, sanitize, escapeHtml, formatDibur } from "./lib/hebrew.js";
 import { parseSefariaRef, parseUserRef, locToRef } from "./lib/refs.js";
@@ -231,9 +231,18 @@ async function loadAmud(loc, segment) {
 
   let text, links;
   try {
-    text = await getText(ref, settings.textLang);
-    const resolvedRef = text.meta?.sectionRef || text.meta?.ref || ref;
-    links = await getLinks(resolvedRef).catch(() => []);
+    const looksResolved = loc.tractate || /\d/.test(ref);
+    if (looksResolved) {
+      [text, links] = await Promise.all([getText(ref, settings.textLang), getLinks(ref).catch(() => [])]);
+      const resolvedRef = text.meta?.sectionRef || text.meta?.ref || ref;
+      if (resolvedRef !== ref && !links.length) {
+        links = await getLinks(resolvedRef).catch(() => []);
+      }
+    } else {
+      text = await getText(ref, settings.textLang);
+      const resolvedRef = text.meta?.sectionRef || text.meta?.ref || ref;
+      links = await getLinks(resolvedRef).catch(() => []);
+    }
   } catch (e) {
     if (token !== state.token) return;
     el.status.textContent = "";
@@ -279,6 +288,12 @@ async function loadAmud(loc, segment) {
   if (token !== state.token) return;
   if (segment) selectSegment(segment, "nav");
   if (settings.tab === "video") loadVideo();
+  // Background-prefetch next & previous sections (+ active Talmud commentators) in Rust so page turns are instant.
+  prefetchRefs(
+    [state.meta?.next, state.meta?.prev].filter(Boolean),
+    settings.textLang,
+    { commentators: [state.columns.inner, state.columns.outer].filter(Boolean) },
+  );
 }
 
 /* ───────────── Gemara ───────────── */
@@ -650,8 +665,8 @@ async function onVideoAction(act) {
 async function refreshCacheStats() {
   try {
     const s = await getCacheStats();
-    const dlCount = settings.downloaded.length;
-    el.libStats.textContent = `${s.sefaria_count} קטעים שמורים במטמון (${formatBytes(s.db_bytes)}) · ${dlCount} ספרים הורדו במלואם`;
+    const booksCount = Math.max(s.books_count || 0, settings.downloaded.length);
+    el.libStats.textContent = `${booksCount} ספרים מלאים · ${s.sefaria_count} קטעים (${formatBytes(s.db_bytes)})`;
   } catch {
     el.libStats.textContent = "";
   }
@@ -763,58 +778,66 @@ async function startBookDownload(title, heTitle) {
   }
 }
 
-async function startFullLibraryDownload() {
+async function startFullLibraryDownload(overrideBooks = null, overrideLabel = null) {
   if (state.dlAbort) {
     toast("הורדה אחרת כבר פעילה — בטל אותה תחילה");
     return;
   }
-  if (!state.library?.books?.length) {
+  const books =
+    overrideBooks ||
+    (state.libCat !== "ALL" && state.libCat !== "DOWNLOADED"
+      ? state.library?.books?.filter((b) => b.category === state.libCat)
+      : state.library?.books);
+  if (!books?.length) {
     toast("אינדקס הספרייה עדיין לא נטען");
     return;
   }
-  const books =
-    state.libCat !== "ALL" && state.libCat !== "DOWNLOADED"
-      ? state.library.books.filter((b) => b.category === state.libCat)
-      : state.library.books;
   const scopeLabel =
-    state.libCat !== "ALL" && state.libCat !== "DOWNLOADED"
+    overrideLabel ||
+    (state.libCat !== "ALL" && state.libCat !== "DOWNLOADED"
       ? state.library.categories.find((c) => c.en === state.libCat)?.he || state.libCat
-      : "כל המאגר";
+      : "כל המאגר");
 
   const ac = new AbortController();
   state.dlAbort = ac;
   el.libProgress.hidden = false;
   el.libProgressFill.parentElement.classList.remove("indeterminate");
   el.libProgressFill.style.width = "1%";
-  el.libProgressText.textContent = `מתחיל הורדת ${scopeLabel} (${books.length} ספרים)…`;
+  el.libProgressText.textContent = `מוריד ${scopeLabel} (${books.length} ספרים) ישירות מ-CDN…`;
 
-  const skipTitles = new Set(settings.downloaded.map((d) => d.title));
+  const dlSet = new Set(settings.downloaded.map((d) => d.title));
+  let dirty = false;
+  let lastUi = 0;
   try {
-    const res = await downloadLibrary(books, {
-      includeLinks: el.libDlLinks.checked,
-      skipTitles,
-      signal: ac.signal,
-      onProgress: ({ bookIndex, totalBooks, book, sections, heRef }) => {
-        const pct = Math.max(1, Math.round((bookIndex / totalBooks) * 100));
-        el.libProgressFill.style.width = `${pct}%`;
-        el.libProgressText.textContent = `מוריד ${scopeLabel}: ספר ${bookIndex}/${totalBooks} (${book.heTitle}) · ${sections} קטעים (${heRef})`;
-      },
-      onBookDone: (book, sections) => {
-        settings.downloaded = [
-          { title: book.title, heTitle: book.heTitle, sections },
-          ...settings.downloaded.filter((d) => d.title !== book.title),
-        ];
-        save();
-        refreshCacheStats();
+    const res = await downloadBooksFast(books, {
+      lang: settings.textLang,
+      onProgress: (p) => {
+        if (p.ok && !dlSet.has(p.title)) {
+          dlSet.add(p.title);
+          settings.downloaded.unshift({ title: p.title, heTitle: p.he_title });
+          dirty = true;
+        }
+        const now = performance.now();
+        if (now - lastUi > 120 || p.completed === p.total) {
+          lastUi = now;
+          const pct = Math.max(1, Math.round((p.completed / p.total) * 100));
+          el.libProgressFill.style.width = `${pct}%`;
+          el.libProgressText.textContent = `${scopeLabel}: ${p.completed}/${p.total} (${pct}%) · ${p.he_title}`;
+          if (dirty) {
+            save();
+            dirty = false;
+          }
+        }
       },
     });
+    if (dirty) save();
     if (res.aborted) {
-      toast(`ההורדה נעצרה (${res.completedBooks} ספרים / ${res.totalSections} קטעים נשמרו — ניתן להמשיך מאותה נקודה)`);
+      toast(`ההורדה נעצרה (${res.downloaded} ספרים חדשים נשמרו — ניתן להמשיך מאותה נקודה)`);
     } else {
-      toast(`הושלמה הורדת ${scopeLabel}: ${res.completedBooks} ספרים (${res.totalSections} קטעים)`);
+      toast(`הושלמה הורדת ${scopeLabel}: ${res.downloaded} ספרים חדשים (${res.skipped} כבר במטמון)`);
     }
   } catch (e) {
-    toast(`שגיאה בהורדת המאגר: ${e.message || e}`);
+    toast(`שגיאה בהורדה: ${e.message || e}`);
   } finally {
     state.dlAbort = null;
     el.libProgress.hidden = true;
@@ -882,9 +905,18 @@ function bind() {
     const title = state.meta?.indexTitle || state.loc?.tractate;
     if (!title) return toast("אין ספר פתוח כרגע");
     const heTitle = state.meta?.heIndexTitle || (state.loc?.tractate ? tractateByEn(state.loc.tractate)?.he : locHe(state.loc)) || title;
-    startBookDownload(title, heTitle);
+    const match = state.library?.books?.find((b) => b.title === title);
+    const categories = match?.categories || state.meta?.categories || [];
+    if (categories.length) {
+      startFullLibraryDownload([{ title, heTitle, categories }], heTitle);
+    } else {
+      startBookDownload(title, heTitle);
+    }
   };
-  el.libDlCancel.onclick = () => state.dlAbort?.abort();
+  el.libDlCancel.onclick = () => {
+    state.dlAbort?.abort();
+    cancelFastDownload();
+  };
 
   el.dafyomi.onclick = async () => {
     try {

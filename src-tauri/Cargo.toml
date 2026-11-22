@@ -1,6 +1,6 @@
 [package]
 name = "sefarya"
-version = "0.2.0"
+version = "0.3.0"
 description = "Linux client for Sefaria focused on Gemara study"
 edition = "2021"
 
@@ -16,7 +16,12 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "http2"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
-tokio = { version = "1", features = ["process", "time"] }
+tokio = { version = "1", features = ["process", "time", "sync"] }
 urlencoding = "2"
+
+[profile.release]
+lto = "thin"
+opt-level = 3
+strip = true

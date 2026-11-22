@@ -1,16 +1,22 @@
+mod books;
 mod cache;
 mod video;
 
 use cache::Cache;
 use serde::Serialize;
-use tauri::{Manager, State};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use tauri::{Emitter, Manager, State};
+use tokio::sync::Semaphore;
 
 const SEFARIA: &str = "https://www.sefaria.org/api/";
 const VIDEO_CHANNEL: &str = "הר עציון";
 
 struct AppState {
-    cache: Cache,
+    cache: Arc<Cache>,
     http: reqwest::Client,
+    prefetch_sem: Arc<Semaphore>,
+    dl_cancel: Arc<AtomicBool>,
 }
 
 #[derive(Serialize)]
@@ -34,6 +40,16 @@ async fn sefaria_get(
         let fresh = max_age_secs.map_or(true, |m| cache::now() - at < m);
         if fresh {
             return Ok(FetchResult { body: body.clone(), from_cache: true, stale: false });
+        }
+    }
+    // Check if the full book was bulk-downloaded from Google Cloud Storage (`ns = "books"`).
+    if let Some((decoded_ref, lang_dir)) = books::parse_text_api_path(&path) {
+        let (book_title, section) = books::split_ref(&decoded_ref);
+        let bkey = format!("{book_title}|{lang_dir}");
+        if let Some((merged, _)) = state.cache.get("books", &bkey) {
+            if let Some(synth) = books::extract_v3_from_merged(&merged, section, lang_dir) {
+                return Ok(FetchResult { body: synth, from_cache: true, stale: false });
+            }
         }
     }
     let url = format!("{SEFARIA}{path}");
@@ -200,6 +216,145 @@ fn cache_stats(state: State<'_, AppState>) -> cache::CacheStats {
     state.cache.stats()
 }
 
+/// Fire-and-forget background prefetch of Sefaria API paths into SQLite so page turns are instant.
+#[tauri::command]
+fn prefetch_paths(state: State<'_, AppState>, paths: Vec<String>) {
+    let cache = Arc::clone(&state.cache);
+    let http = state.http.clone();
+    let sem = Arc::clone(&state.prefetch_sem);
+    for path in paths.into_iter().take(12) {
+        if cache.get("sefaria", &path).is_some() {
+            continue;
+        }
+        let cache = Arc::clone(&cache);
+        let http = http.clone();
+        let sem = Arc::clone(&sem);
+        tauri::async_runtime::spawn(async move {
+            let Ok(_permit) = sem.acquire_owned().await else { return };
+            if cache.get("sefaria", &path).is_some() {
+                return;
+            }
+            let url = format!("{SEFARIA}{path}");
+            if let Ok(Ok(r)) = http.get(&url).send().await.map(|r| r.error_for_status()) {
+                if let Ok(body) = r.text().await {
+                    if !body.trim_start().starts_with("{\"error\"") {
+                        cache.put("sefaria", &path, &body);
+                    }
+                }
+            }
+        });
+    }
+}
+
+/// Cancels an active `download_books_fast` operation.
+#[tauri::command]
+fn cancel_fast_download(state: State<'_, AppState>) {
+    state.dl_cancel.store(true, Ordering::Relaxed);
+}
+
+/// Bulk-downloads whole books directly from Google Cloud Storage (`sefaria-export/json/.../merged.json`)
+/// with 16 concurrent HTTP/2 streams — ~100x faster than per-chapter API downloads.
+#[tauri::command]
+async fn download_books_fast(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    specs: Vec<books::BookDownloadSpec>,
+    lang: Option<String>,
+) -> Result<books::FastDownloadResult, String> {
+    let lang_dir = if lang.as_deref() == Some("english") {
+        "English".to_string()
+    } else {
+        "Hebrew".to_string()
+    };
+    state.dl_cancel.store(false, Ordering::Relaxed);
+    let total = specs.len();
+    let completed = Arc::new(AtomicUsize::new(0));
+    let downloaded = Arc::new(AtomicUsize::new(0));
+    let skipped = Arc::new(AtomicUsize::new(0));
+    let failed = Arc::new(AtomicUsize::new(0));
+    let sem = Arc::new(Semaphore::new(16));
+
+    let mut handles = Vec::with_capacity(total);
+    for spec in specs {
+        let app = app.clone();
+        let cache = Arc::clone(&state.cache);
+        let http = state.http.clone();
+        let cancel = Arc::clone(&state.dl_cancel);
+        let sem = Arc::clone(&sem);
+        let completed = Arc::clone(&completed);
+        let downloaded = Arc::clone(&downloaded);
+        let skipped = Arc::clone(&skipped);
+        let failed = Arc::clone(&failed);
+        let lang_dir = lang_dir.clone();
+
+        handles.push(tauri::async_runtime::spawn(async move {
+            let Ok(_permit) = sem.acquire_owned().await else { return };
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            let bkey = format!("{}|{}", spec.title, lang_dir);
+            if cache.get("books", &bkey).is_some() {
+                skipped.fetch_add(1, Ordering::Relaxed);
+                let c = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                let _ = app.emit(
+                    "dl-progress",
+                    books::FastDownloadProgress {
+                        completed: c,
+                        total,
+                        title: spec.title,
+                        he_title: spec.he_title,
+                        skipped: true,
+                        ok: true,
+                    },
+                );
+                return;
+            }
+            let url = books::gcs_merged_url(&spec.categories, &spec.title, &lang_dir);
+            let ok = match http.get(&url).send().await.and_then(|r| r.error_for_status()) {
+                Ok(r) => match r.text().await {
+                    Ok(body) if body.starts_with('{') => {
+                        cache.put("books", &bkey, &body);
+                        downloaded.fetch_add(1, Ordering::Relaxed);
+                        true
+                    }
+                    _ => {
+                        failed.fetch_add(1, Ordering::Relaxed);
+                        false
+                    }
+                },
+                Err(_) => {
+                    failed.fetch_add(1, Ordering::Relaxed);
+                    false
+                }
+            };
+            let c = completed.fetch_add(1, Ordering::Relaxed) + 1;
+            let _ = app.emit(
+                "dl-progress",
+                books::FastDownloadProgress {
+                    completed: c,
+                    total,
+                    title: spec.title,
+                    he_title: spec.he_title,
+                    skipped: false,
+                    ok,
+                },
+            );
+        }));
+    }
+
+    for h in handles {
+        let _ = h.await;
+    }
+
+    Ok(books::FastDownloadResult {
+        completed: completed.load(Ordering::Relaxed),
+        downloaded: downloaded.load(Ordering::Relaxed),
+        skipped: skipped.load(Ordering::Relaxed),
+        failed: failed.load(Ordering::Relaxed),
+        aborted: state.dl_cancel.load(Ordering::Relaxed),
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -207,16 +362,24 @@ pub fn run() {
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
-            let cache = Cache::open(&dir.join("cache.sqlite"))?;
+            let cache = Arc::new(Cache::open(&dir.join("cache.sqlite"))?);
             let http = reqwest::Client::builder()
                 .user_agent(concat!("Sefarya/", env!("CARGO_PKG_VERSION"), " (Linux desktop client)"))
+                .pool_max_idle_per_host(20)
+                .tcp_nodelay(true)
+                .http2_adaptive_window(true)
                 .timeout(std::time::Duration::from_secs(30))
                 .build()?;
-            app.manage(AppState { cache, http });
+            let prefetch_sem = Arc::new(Semaphore::new(6));
+            let dl_cancel = Arc::new(AtomicBool::new(false));
+            app.manage(AppState { cache, http, prefetch_sem, dl_cancel });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             sefaria_get,
+            prefetch_paths,
+            download_books_fast,
+            cancel_fast_download,
             find_video,
             find_book_audio,
             get_audio_stream,

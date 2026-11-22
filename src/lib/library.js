@@ -35,11 +35,15 @@ export function flattenLibrary(toc) {
       } else if (node.title) {
         const cat = topCat || node.categories?.[0] || "Other";
         const catHe = topCatHe || LIBRARY_CAT_HE[cat] || cat;
+        const categories = Array.isArray(node.categories) && node.categories.length
+          ? node.categories
+          : [cat, ...path].filter(Boolean);
         books.push({
           title: node.title,
           heTitle: node.heTitle || node.title,
           category: cat,
           categoryHe: catHe,
+          categories,
           subPath: pathHe.filter(Boolean).join(" › "),
           order: node.order ?? 9999,
         });

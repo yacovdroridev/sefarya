@@ -1,6 +1,6 @@
 name: sefarya
 base: core24
-version: "0.2.0"
+version: "0.3.0"
 summary: Linux desktop client for Sefaria (Talmud & Jewish Library)
 description: |
   Sefarya (ספריא) is a fast Linux desktop client for Sefaria focused on Gemara

@@ -189,9 +189,9 @@ button { font: inherit; color: inherit; cursor: pointer; }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  backdrop-filter: blur(10px);
+  contain: layout style;
   overflow: hidden;
-  animation: rise 0.45s var(--ease) both;
+  animation: rise 0.3s var(--ease) both;
 }
 .col-gemara { animation-delay: 0.05s; }
 #col-outer { animation-delay: 0.1s; }
@@ -278,10 +278,11 @@ body.no-marks .marks { display: none; }
   width: var(--sidebar-w); flex-shrink: 0;
   display: flex; flex-direction: column; min-height: 0;
   background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius); box-shadow: var(--shadow); backdrop-filter: blur(10px);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  contain: layout style;
   overflow: hidden; font-size: var(--fs-side);
-  transition: width 0.35s var(--ease), opacity 0.25s, margin 0.35s var(--ease);
-  animation: rise 0.45s 0.15s var(--ease) both;
+  transition: width 0.25s var(--ease), opacity 0.2s, margin 0.25s var(--ease);
+  animation: rise 0.3s 0.08s var(--ease) both;
 }
 body.side-hidden .sidebar { width: 0; opacity: 0; margin-inline-start: -12px; border-width: 0; }
 

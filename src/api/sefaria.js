@@ -4,19 +4,73 @@ import { firstRefsFromIndex } from "../lib/library.js";
 
 const isTauri = () => typeof window !== "undefined" && !!window.__TAURI_INTERNALS__;
 
-/** GET a Sefaria API path. Uses the Rust cache in Tauri; falls back to fetch in a plain browser. */
+// L1 in-memory LRU cache + in-flight deduplication for 0ms repeat hits.
+const MEM_LIMIT = 300;
+const memCache = new Map();
+const inflight = new Map();
+
+function memGet(path, maxAge) {
+  const hit = memCache.get(path);
+  if (!hit) return null;
+  if (maxAge != null && (Date.now() - hit.at) / 1000 >= maxAge) return null;
+  memCache.delete(path);
+  memCache.set(path, hit);
+  return hit.value;
+}
+function memSet(path, value) {
+  if (memCache.has(path)) memCache.delete(path);
+  memCache.set(path, { value, at: Date.now() });
+  if (memCache.size > MEM_LIMIT) memCache.delete(memCache.keys().next().value);
+}
+
+/** GET a Sefaria API path. Uses L1 memory + Rust SQLite cache in Tauri; falls back to fetch in a plain browser. */
 export async function sefariaGet(path, { maxAge = null } = {}) {
-  if (isTauri()) {
-    const r = await invoke("sefaria_get", { path, maxAgeSecs: maxAge });
-    const data = JSON.parse(r.body);
+  const cached = memGet(path, maxAge);
+  if (cached) return cached;
+  if (inflight.has(path)) return inflight.get(path);
+
+  const p = (async () => {
+    if (isTauri()) {
+      const r = await invoke("sefaria_get", { path, maxAgeSecs: maxAge });
+      const data = JSON.parse(r.body);
+      if (data && data.error) throw new Error(data.error);
+      const out = { data, fromCache: r.from_cache, stale: r.stale };
+      memSet(path, out);
+      return out;
+    }
+    const res = await fetch(`https://www.sefaria.org/api/${path}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
     if (data && data.error) throw new Error(data.error);
-    return { data, fromCache: r.from_cache, stale: r.stale };
+    const out = { data, fromCache: false, stale: false };
+    memSet(path, out);
+    return out;
+  })();
+
+  inflight.set(path, p);
+  try {
+    return await p;
+  } finally {
+    inflight.delete(path);
   }
-  const res = await fetch(`https://www.sefaria.org/api/${path}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = await res.json();
-  if (data && data.error) throw new Error(data.error);
-  return { data, fromCache: false, stale: false };
+}
+
+/** Fire-and-forget background prefetch into Rust SQLite cache for instant page turns. */
+export function prefetchRefs(refs, lang = "hebrew", { commentators = [] } = {}) {
+  if (!isTauri() || !refs?.length) return;
+  const paths = [];
+  for (const ref of refs) {
+    if (!ref) continue;
+    paths.push(`v3/texts/${enc(ref)}?version=${lang}`);
+    paths.push(`links/${enc(ref)}?with_text=0`);
+    const m = ref.match(/ (\d+[ab])$/);
+    if (m) {
+      for (const idxTitle of commentators) {
+        if (idxTitle) paths.push(`v3/texts/${enc(`${idxTitle} ${m[1]}`)}?version=hebrew`);
+      }
+    }
+  }
+  if (paths.length) invoke("prefetch_paths", { paths }).catch(() => {});
 }
 
 const enc = (ref) => encodeURIComponent(ref.replace(/ /g, "_")).replace(/%3A/g, ":");
@@ -109,13 +163,42 @@ export async function openVideoWindow(id, title) {
 }
 
 export async function clearCache(ns) {
-  if (isTauri()) return invoke("clear_cache", { ns });
+  if (ns === "sefaria" || ns === "books") memCache.clear();
+  if (isTauri()) {
+    const n = await invoke("clear_cache", { ns });
+    if (ns === "sefaria") return n + (await invoke("clear_cache", { ns: "books" }));
+    return n;
+  }
   return 0;
 }
 
 export async function getCacheStats() {
   if (isTauri()) return invoke("cache_stats");
-  return { sefaria_count: 0, video_count: 0, db_bytes: 0 };
+  return { sefaria_count: 0, books_count: 0, video_count: 0, db_bytes: 0 };
+}
+
+/**
+ * Ultra-fast Rust bulk downloader pulling whole books directly from Google Cloud Storage
+ * (`sefaria-export/json/.../merged.json`) with 16 concurrent HTTP/2 streams.
+ */
+export async function downloadBooksFast(books, { lang = "hebrew", onProgress } = {}) {
+  if (!isTauri()) throw new Error("Fast bulk download requires desktop app");
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlisten = await listen("dl-progress", (ev) => onProgress?.(ev.payload));
+  try {
+    const specs = books.map((b) => ({
+      title: b.title,
+      he_title: b.heTitle || b.title,
+      categories: b.categories || [b.category].filter(Boolean),
+    }));
+    return await invoke("download_books_fast", { specs, lang });
+  } finally {
+    unlisten();
+  }
+}
+
+export async function cancelFastDownload() {
+  if (isTauri()) return invoke("cancel_fast_download");
 }
 
 export async function getLibraryIndex() {
@@ -148,13 +231,14 @@ export async function downloadBook(startRef, { includeLinks = true, onProgress, 
     else if (curTitle && curTitle !== bookTitle) break;
 
     const sectionRef = meta.sectionRef || meta.ref || ref;
+    const next = meta.next;
+    // Overlap links fetch with progress update; prefetch next section in Rust if available.
     if (includeLinks) {
       await getLinks(sectionRef).catch(() => []);
     }
     count++;
     onProgress?.({ count, ref: sectionRef, heRef: meta.heRef || sectionRef, done: false });
 
-    const next = meta.next;
     if (!next || visited.has(next)) break;
     ref = next;
   }
@@ -163,40 +247,48 @@ export async function downloadBook(startRef, { includeLinks = true, onProgress, 
 }
 
 /**
- * Resumably downloads a list of books (e.g. the full Sefaria library or a category) into SQLite.
- * Skips books in `skipTitles` and saves progress incrementally via `onBookDone`.
+ * Resumably downloads a list of books (e.g. the full Sefaria library or a category) into SQLite
+ * using 4 concurrent workers for maximum throughput.
  */
-export async function downloadLibrary(books, { includeLinks = false, skipTitles = new Set(), onProgress, onBookDone, signal } = {}) {
+export async function downloadLibrary(books, { includeLinks = false, skipTitles = new Set(), onProgress, onBookDone, signal, concurrency = 4 } = {}) {
   let completedBooks = 0;
+  let startedBooks = 0;
   let totalSections = 0;
   let errors = 0;
   const total = books.length;
+  let cursor = 0;
 
-  for (let i = 0; i < total; i++) {
-    if (signal?.aborted) return { completedBooks, totalSections, errors, aborted: true };
-    const book = books[i];
-    if (skipTitles.has(book.title)) {
-      completedBooks++;
-      onProgress?.({ bookIndex: i + 1, totalBooks: total, book, sections: 0, totalSections, heRef: "כבר במטמון" });
-      continue;
+  const worker = async () => {
+    while (cursor < total) {
+      if (signal?.aborted) return;
+      const i = cursor++;
+      const book = books[i];
+      startedBooks++;
+      if (skipTitles.has(book.title)) {
+        completedBooks++;
+        onProgress?.({ bookIndex: completedBooks, totalBooks: total, book, sections: 0, totalSections, heRef: "✓" });
+        continue;
+      }
+      try {
+        const res = await downloadBook(book.title, {
+          includeLinks,
+          signal,
+          onProgress: ({ count, heRef }) => {
+            onProgress?.({ bookIndex: Math.min(total, completedBooks + 1), totalBooks: total, book, sections: count, totalSections: totalSections + count, heRef });
+          },
+        });
+        totalSections += res.count;
+        if (res.aborted) return;
+        completedBooks++;
+        onBookDone?.(book, res.count);
+      } catch {
+        errors++;
+      }
     }
-    try {
-      const res = await downloadBook(book.title, {
-        includeLinks,
-        signal,
-        onProgress: ({ count, heRef }) => {
-          onProgress?.({ bookIndex: i + 1, totalBooks: total, book, sections: count, totalSections: totalSections + count, heRef });
-        },
-      });
-      totalSections += res.count;
-      if (res.aborted) return { completedBooks, totalSections, errors, aborted: true };
-      completedBooks++;
-      onBookDone?.(book, res.count);
-    } catch {
-      errors++;
-    }
-  }
-  return { completedBooks, totalSections, errors, aborted: false };
+  };
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, total) }, worker));
+  return { completedBooks, totalSections, errors, aborted: !!signal?.aborted };
 }
 
 export function sefariaUrl(ref) {

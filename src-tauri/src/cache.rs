@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[derive(Serialize)]
 pub struct CacheStats {
     pub sefaria_count: usize,
+    pub books_count: usize,
     pub video_count: usize,
     pub db_bytes: u64,
 }
@@ -37,6 +38,10 @@ impl Cache {
     fn init(conn: Connection, path: Option<PathBuf>) -> rusqlite::Result<Self> {
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             PRAGMA temp_store=MEMORY;
+             PRAGMA cache_size=-16000;
+             PRAGMA mmap_size=67108864;
              CREATE TABLE IF NOT EXISTS kv (
                 ns TEXT NOT NULL,
                 key TEXT NOT NULL,
@@ -79,7 +84,7 @@ impl Cache {
     }
 
     pub fn stats(&self) -> CacheStats {
-        let (sefaria_count, video_count) = self
+        let (sefaria_count, books_count, video_count) = self
             .conn
             .lock()
             .ok()
@@ -87,19 +92,22 @@ impl Cache {
                 let s: i64 = c
                     .query_row("SELECT COUNT(*) FROM kv WHERE ns='sefaria'", [], |r| r.get(0))
                     .unwrap_or(0);
+                let b: i64 = c
+                    .query_row("SELECT COUNT(*) FROM kv WHERE ns='books'", [], |r| r.get(0))
+                    .unwrap_or(0);
                 let v: i64 = c
                     .query_row("SELECT COUNT(*) FROM kv WHERE ns='video'", [], |r| r.get(0))
                     .unwrap_or(0);
-                (s.max(0) as usize, v.max(0) as usize)
+                (s.max(0) as usize, b.max(0) as usize, v.max(0) as usize)
             })
-            .unwrap_or((0, 0));
+            .unwrap_or((0, 0, 0));
         let db_bytes = self
             .path
             .as_ref()
             .and_then(|p| std::fs::metadata(p).ok())
             .map(|m| m.len())
             .unwrap_or(0);
-        CacheStats { sefaria_count, video_count, db_bytes }
+        CacheStats { sefaria_count, books_count, video_count, db_bytes }
     }
 }
 
